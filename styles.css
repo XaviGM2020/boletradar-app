@@ -9,3 +9,5 @@
 #close-map-layers{display:block;width:100%;margin-top:8px;font-size:12px;touch-action:manipulation}
 
 .variable-layers-panel{width:230px;max-width:calc(100vw - 80px);padding:4px}.variable-layers-panel select{font-size:13px;width:100%;min-height:44px;margin-bottom:8px}.variable-layers-panel .variable-cover-check{display:flex;align-items:flex-start;gap:8px;line-height:1.4}.variable-cover-check input{flex-shrink:0;width:18px;height:18px;margin:2px 0}.variable-layer-control .leaflet-control-layers-toggle{border:0;min-height:48px;padding:0;touch-action:manipulation}
+
+.data-quality{display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:12px;background:#f0f3eb;margin:12px 0}.data-quality strong{font-size:14px}.temporal-check{max-width:240px;font-size:13px}.temporal-check input{margin-top:4px}.variable-layers-panel input[type=range]{width:100%;min-height:30px;margin:4px 0 10px;accent-color:var(--green)}#load-map-area{width:100%;font-size:12px;margin-bottom:8px}.variable-layers-panel{max-height:310px;overflow-y:auto}button:disabled{opacity:.6;cursor:wait}
