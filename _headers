@@ -2,7 +2,7 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(self), camera=(self), microphone=()
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://geoserveis.icgc.cat; connect-src 'self' https://api.open-meteo.com https://archive-api.open-meteo.com https://geoserveis.icgc.cat; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://geoserveis.icgc.cat https://geoserver.iepnb.es; connect-src 'self' https://api.open-meteo.com https://archive-api.open-meteo.com https://geoserveis.icgc.cat https://geoserver.iepnb.es; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'
 /sw.js
   Cache-Control: no-cache
 /manifest.json
