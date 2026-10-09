@@ -8,6 +8,6 @@ export const getMeta=k=>transaction('meta','readonly',s=>s.get(k));
 export const setMeta=(k,v)=>transaction('meta','readwrite',s=>s.put(v,k));
 export const clear=async()=>{await transaction('outings','readwrite',s=>s.clear());await transaction('meta','readwrite',s=>s.clear());};
 
-export const clearSearch=()=>transaction('meta','readwrite',s=>{const c=s.openCursor();c.onsuccess=()=>{const row=c.result;if(!row)return;if(/^(weather:|prediction:|ranking:|saved-predictions$|search-results$)/.test(String(row.key)))row.delete();row.continue();};});
+export const clearSearch=()=>transaction('meta','readwrite',s=>{const c=s.openCursor();c.onsuccess=()=>{const row=c.result;if(!row)return;if(/^(weather:|prediction:|ranking:|saved-predictions$|saved-map-points$|search-results$)/.test(String(row.key)))row.delete();row.continue();};});
 
 export const removeMeta=k=>transaction('meta','readwrite',s=>s.delete(k));
