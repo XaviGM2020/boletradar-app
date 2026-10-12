@@ -3,7 +3,7 @@ import {getMeta,setMeta} from './storage.js';
 import {mapLimit} from './search-grid.js';
 export async function fetchCells(cells,date,{signal,onProgress=()=>{},offline=false}={}){
  const keys=cells.map(c=>`area:${c.lat.toFixed(6)}:${c.lon.toFixed(6)}:${date}`),result=[],pending=[];
- for(let i=0;i<cells.length;i++){signal?.throwIfAborted();const cached=await getMeta(keys[i]);if(cached?.models?.rovellons?.model==='heuristic-v3'&&(offline||(!cached.environment.errors?.length&&Date.now()-Date.parse(cached.environment.updated_at)<21600000))){result[i]={...cached,cell:cells[i]};}else pending.push(i);}
+ for(let i=0;i<cells.length;i++){signal?.throwIfAborted();const cached=await getMeta(keys[i]);if(cached?.models?.rovellons?.model==='heuristic-v3'&&(offline||(cached.environment.weather?.observation_version===1&&!cached.environment.weather?.observation?.unavailable&&!cached.environment.errors?.length&&Date.now()-Date.parse(cached.environment.updated_at)<21600000))){result[i]={...cached,cell:cells[i]};}else pending.push(i);}
  signal?.throwIfAborted();if(offline){if(pending.length)throw new Error('Aquesta zona no està guardada. Connecta’t per carregar-la.');return result;}
  if(!pending.length){onProgress(cells.length,cells.length);return result;}
  const points=pending.map(i=>cells[i]);

@@ -1,7 +1,7 @@
 // hosting/lib/boletradar/enrichment.mjs
 var finite = Number.isFinite;
-function temporalSummary(rows, target, shift2) {
-  const previous = Array.from({ length: 7 }, (_, i) => rows[shift2(target, -i - 1)]);
+function temporalSummary(rows, target, shift3) {
+  const previous = Array.from({ length: 7 }, (_, i) => rows[shift3(target, -i - 1)]);
   const all = previous.every((r) => r && finite(r.precipitation_sum) && finite(r.et0_fao_evapotranspiration));
   const frost = previous.every((r) => r && finite(r.temperature_2m_min));
   return { water_balance_7d: all ? Math.round(previous.reduce((a, r) => a + r.precipitation_sum - r.et0_fao_evapotranspiration, 0) * 100) / 100 : null, frost_days_7d: frost ? previous.filter((r) => r.temperature_2m_min < 0).length : null };
@@ -29,10 +29,127 @@ function deriveTerrain(values) {
 }
 function dataQuality(environment, model, now = Date.now()) {
   const w = environment.weather || {}, f = environment.forest || {}, t = environment.terrain || {};
-  const fields = [["Temperatura", w.temperature], ["Pluja de 14 dies", w.rain?.["14"]], ["Humitat del s\xF2l", w.soil_moisture], ["Humitat de l\u2019aire", w.humidity], ["Altitud", w.elevation], ["Cobertura arb\xF2ria", f.tree_cover], ["Compatibilitat dels arbres", model.factors?.find((x) => x.name === "Compatibilitat d\u2019arbres hostes")?.value]];
-  const missing = fields.filter(([, v]) => !finite(v)).map(([n]) => n), partial = model.quality === "provisional";
+  const fields2 = [["Temperatura", w.temperature], ["Pluja de 14 dies", w.rain?.["14"]], ["Humitat del s\xF2l", w.soil_moisture], ["Humitat de l\u2019aire", w.humidity], ["Altitud", w.elevation], ["Cobertura arb\xF2ria", f.tree_cover], ["Compatibilitat dels arbres", model.factors?.find((x) => x.name === "Compatibilitat d\u2019arbres hostes")?.value]];
+  const missing = fields2.filter(([, v]) => !finite(v)).map(([n]) => n), partial = model.quality === "provisional";
   const age = (now - Date.parse(w.source?.retrieved_at || environment.updated_at)) / 36e5, stale = finite(age) && age > 6;
-  return { label: model.index == null ? "Insuficients" : missing.length || partial ? "Parcials" : "Completes per al model", available: fields.length - missing.length, total: fields.length, missing, stale, age_hours: finite(age) ? Math.max(0, Math.round(age)) : null, terrain_available: finite(t.slope), temporal_available: model.temporal?.available === true, cartography_period: f.species_source?.reference_period || f.source?.reference_period || "Desconegut", validated: false };
+  return { label: model.index == null ? "Insuficients" : missing.length || partial ? "Parcials" : "Completes per al model", available: fields2.length - missing.length, total: fields2.length, missing, stale, age_hours: finite(age) ? Math.max(0, Math.round(age)) : null, terrain_available: finite(t.slope), temporal_available: model.temporal?.available === true, cartography_period: f.species_source?.reference_period || f.source?.reference_period || "Desconegut", validated: false };
+}
+
+// hosting/lib/boletradar/observations.mjs
+var STATIONS_URL = "https://analisi.transparenciacatalunya.cat/resource/yqwd-vj5e.json";
+var DAILY_URL = "https://analisi.transparenciacatalunya.cat/resource/7bvh-jvq2.json";
+var fields = { "1000": "temperature_2m_mean", "1001": "temperature_2m_max", "1002": "temperature_2m_min", "1100": "relative_humidity_2m_mean", "1300": "precipitation_sum" };
+var shift = (date, n) => new Date(Date.parse(date + "T12:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+var finite2 = Number.isFinite;
+function numeric(v) {
+  return v != null && String(v).trim() !== "" && finite2(Number(v)) ? Number(v) : null;
+}
+var km = (a, b) => {
+  const r = Math.PI / 180, v = Math.sin((b.lat - a.lat) * r / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin((b.lon - a.lon) * r / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(v), Math.sqrt(1 - v));
+};
+function chooseStation(stations, point, date) {
+  if (!finite2(point.elevation)) return null;
+  return stations.map((s) => ({ code: s.codi_estacio, name: s.nom_estacio, lat: numeric(s.latitud), lon: numeric(s.longitud), elevation: numeric(s.altitud), start: s.data_inici?.slice(0, 10), end: s.data_fi?.slice(0, 10), status: s.codi_estat_ema })).filter((s) => /^[A-Za-z0-9]+$/.test(s.code) && finite2(s.lat) && finite2(s.lon) && finite2(s.elevation) && (!s.start || s.start <= date) && (!s.end || s.end >= date) && (!s.status || s.end || s.status === "2")).map((s) => ({ ...s, distance_km: km(point, s), elevation_difference_m: s.elevation - point.elevation })).filter((s) => s.distance_km <= 20 && Math.abs(s.elevation_difference_m) <= 300).sort((a, b) => a.distance_km + Math.abs(a.elevation_difference_m) / 100 * 2 - (b.distance_km + Math.abs(b.elevation_difference_m) / 100 * 2) || a.code.localeCompare(b.code))[0] || null;
+}
+function observationRows(records, stationCode, today2) {
+  const rows = {};
+  for (const r of records) {
+    const field = fields[r.codi_variable], day = r.data_lectura?.slice(0, 10), value = numeric(r.valor);
+    if (r.codi_estacio !== stationCode || !field || !day || day >= today2 || r.estat?.trim().toLowerCase() !== "representatiu" || value == null) continue;
+    if (field === "precipitation_sum" && value < 0 || field === "relative_humidity_2m_mean" && (value < 0 || value > 100)) continue;
+    (rows[day] ??= {})[field] = value;
+  }
+  return rows;
+}
+function mergeObservations(base, station, records, target, today2, reason = null) {
+  const observations = station ? observationRows(records, station.code, today2) : {}, rows = structuredClone(base.daily_rows || {}), used = {};
+  for (const [day, values] of Object.entries(observations)) {
+    if (day < shift(target, -30) || day > target) continue;
+    rows[day] = { ...rows[day], ...values };
+    used[day] = values;
+  }
+  const current = rows[target] || {}, provenance = {}, origin = (day, field) => finite2(used[day]?.[field]) ? "observed" : finite2(rows[day]?.[field]) ? day >= today2 ? "forecast" : "modeled" : "unknown";
+  const combined = (dates, fields2) => {
+    const kinds = dates.flatMap((d) => fields2.map((f) => origin(d, f)));
+    if (kinds.includes("unknown")) return "unknown";
+    if (kinds.every((k) => k === "observed")) return "observed";
+    if (kinds.includes("observed")) return "mixed";
+    return kinds.includes("forecast") ? "forecast" : "modeled";
+  };
+  const result = { ...base, daily_rows: rows, observation_version: 1 };
+  for (const [key, field] of Object.entries({ temperature: "temperature_2m_mean", temperature_min: "temperature_2m_min", temperature_max: "temperature_2m_max", humidity: "relative_humidity_2m_mean" })) {
+    result[key] = finite2(current[field]) ? current[field] : null;
+    provenance[key] = origin(target, field);
+  }
+  result.rain = {};
+  for (const n of [3, 7, 14, 21, 30]) {
+    const dates = Array.from({ length: n }, (_, i) => shift(target, -i - 1)), values = dates.map((d) => rows[d]?.precipitation_sum);
+    result.rain[n] = values.every(finite2) ? Math.round(values.reduce((a, b) => a + b, 0) * 100) / 100 : null;
+    provenance["rain" + n] = combined(dates, ["precipitation_sum"]);
+  }
+  let since = null;
+  for (let i = 1; i <= 30; i++) {
+    const v = rows[shift(target, -i)]?.precipitation_sum;
+    if (!finite2(v)) break;
+    if (v >= 2) {
+      since = i;
+      break;
+    }
+  }
+  result.days_since_rain = since;
+  const rainDates = Array.from({ length: 30 }, (_, i) => shift(target, -i - 1));
+  result.no_rain_30d = since == null && rainDates.every((d) => finite2(rows[d]?.precipitation_sum) && rows[d].precipitation_sum < 2);
+  provenance.lastRain = combined(rainDates.slice(0, since || 30), ["precipitation_sum"]);
+  Object.assign(result, temporalSummary(rows, target, shift));
+  const recent = rainDates.slice(0, 7);
+  provenance.frost = combined(recent, ["temperature_2m_min"]);
+  provenance.balance = combined(recent, ["precipitation_sum", "et0_fao_evapotranspiration"]);
+  provenance.soil = finite2(base.soil_moisture) ? target >= today2 ? "forecast" : "modeled" : "unknown";
+  result.provenance = provenance;
+  result.observation = { station: station ? { ...station, distance_km: Math.round(station.distance_km * 10) / 10, elevation_difference_m: Math.round(station.elevation_difference_m) } : null, used_days: Object.keys(used).length, last_observed_date: Object.keys(used).sort().at(-1) || null, reason: reason || (!station ? "Cap estaci\xF3 disponible dins de 20 km i \xB1300 m d\u2019altitud." : !Object.keys(used).length ? "Sense observacions representatives disponibles en aquest per\xEDode." : null), retrieved_at: (/* @__PURE__ */ new Date()).toISOString(), url: DAILY_URL, criteria: "Selecci\xF3 heur\xEDstica: \u226420 km i difer\xE8ncia d\u2019altitud \u2264300 m; no garanteix el mateix microclima." };
+  result.source = { ...base.source, name: Object.keys(used).length ? base.source?.kind === "unavailable" ? "Meteocat XEMA" : "Meteocat XEMA + Open-Meteo" : base.source?.name || "Open-Meteo", kind: Object.keys(used).length ? base.source?.kind === "unavailable" ? "observations" : "mixed" : base.source?.kind || "unavailable" };
+  result.series = Object.entries(rows).filter(([d]) => d >= shift(target, -30) && d <= target).sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date, temperature: v.temperature_2m_mean ?? null, rain: v.precipitation_sum ?? null, kind: combined([date], ["temperature_2m_mean", "precipitation_sum"]) }));
+  return result;
+}
+var stationCache = null;
+var dailyCache = /* @__PURE__ */ new Map();
+function clearObservationCache() {
+  stationCache = null;
+  dailyCache.clear();
+}
+async function observedWeatherMany(fetcher, db, points, bases, target, today2, options = {}) {
+  const end = target < today2 ? target : shift(today2, -1), start = shift(target, -30);
+  if (start > end) return bases.map((b) => mergeObservations(b, null, [], target, today2, "Finestra sense dies passats observables."));
+  try {
+    if (!stationCache || Date.now() - stationCache.time > 864e5) {
+      const { value } = await fetcher(db, STATIONS_URL, { "$limit": 5e3 }, options);
+      if (!Array.isArray(value) || value.length >= 5e3) throw new Error("Metadades d\u2019estacions incompletes.");
+      stationCache = { value, time: Date.now() };
+    }
+    const chosen = points.map((p, i) => chooseStation(stationCache.value, { ...p, elevation: bases[i].elevation }, end)), codes = [...new Set(chosen.filter(Boolean).map((s) => s.code))];
+    const missing = codes.filter((code) => !dailyCache.has(code + ":" + start + ":" + end) || Date.now() - dailyCache.get(code + ":" + start + ":" + end).time > 36e5);
+    for (let i = 0; i < missing.length; i += 12) {
+      const part = missing.slice(i, i + 12), where = `codi_estacio in(${part.map((c) => "'" + c + "'").join(",")}) AND data_lectura >= '${start}T00:00:00' AND data_lectura <= '${end}T00:00:00' AND codi_variable in('1000','1001','1002','1100','1300')`;
+      const { value } = await fetcher(db, DAILY_URL, { "$where": where, "$limit": 5e3, "$order": "data_lectura,codi_estacio,codi_variable" }, { ttl: 36e5, ...options });
+      if (!Array.isArray(value) || value.length >= 5e3) throw new Error("Observacions incompletes.");
+      for (const code of part) dailyCache.set(code + ":" + start + ":" + end, { value: value.filter((r) => r.codi_estacio === code), time: Date.now() });
+    }
+    if (dailyCache.size > 500) {
+      for (const key of dailyCache.keys()) {
+        if (dailyCache.size <= 400) break;
+        if (!codes.some((code) => key === code + ":" + start + ":" + end)) dailyCache.delete(key);
+      }
+    }
+    return bases.map((b, i) => mergeObservations(b, chosen[i], chosen[i] ? dailyCache.get(chosen[i].code + ":" + start + ":" + end)?.value || [] : [], target, today2));
+  } catch (e) {
+    options.signal?.throwIfAborted();
+    return bases.map((b) => {
+      const w = mergeObservations(b, null, [], target, today2, "Observacions Meteocat no disponibles; es conserva el model o el valor desconegut.");
+      w.observation.unavailable = true;
+      return w;
+    });
+  }
 }
 
 // hosting/lib/boletradar/forest-species.mjs
@@ -105,7 +222,7 @@ var heuristic_default = {
 
 // hosting/lib/boletradar/environment.mjs
 var today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Madrid", year: "numeric", month: "2-digit", day: "2-digit" }).format(/* @__PURE__ */ new Date());
-var shift = (date, days) => new Date(Date.parse(date + "T12:00:00Z") + days * 864e5).toISOString().slice(0, 10);
+var shift2 = (date, days) => new Date(Date.parse(date + "T12:00:00Z") + days * 864e5).toISOString().slice(0, 10);
 function inRing(lon, lat, ring) {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -189,7 +306,7 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
   throw new Error(last?.message === "L\xEDmit diari de consultes ambientals assolit." ? last.message : "Font ambiental no disponible" + (/^HTTP \d+$/.test(last?.message) ? " (" + last.message + ")" : "") + "; no s\u2019han inventat valors.");
 }
 function weatherRequest(target) {
-  const now = today(), start = shift(target, -30), archive = target < shift(now, -5);
+  const now = today(), start = shift2(target, -30), archive = target < shift2(now, -5);
   const url = archive ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast";
   const params = { timezone: "Europe/Madrid", daily: "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,wind_speed_10m_max,et0_fao_evapotranspiration", ...archive ? { start_date: start, end_date: target, hourly: "soil_moisture_0_to_7cm" } : { past_days: 35, forecast_days: 11, hourly: "soil_moisture_0_to_1cm" } };
   return { url, params, archive, start, now };
@@ -200,12 +317,12 @@ function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOS
   if (!current) throw new Error("La font no cobreix aquesta data.");
   const kind = archive ? "reanalysis" : target >= now ? "forecast" : "recent_model", rain = {};
   for (const n of [3, 7, 14, 21, 30]) {
-    const values = Array.from({ length: n }, (_, i) => rows[shift(target, -i - 1)]?.precipitation_sum ?? null);
+    const values = Array.from({ length: n }, (_, i) => rows[shift2(target, -i - 1)]?.precipitation_sum ?? null);
     rain[n] = values.every((v) => v != null) ? Math.round(values.reduce((a, b) => a + b, 0) * 100) / 100 : null;
   }
   let since = null;
   for (let i = 1; i <= 30; i++) {
-    const v = rows[shift(target, -i)]?.precipitation_sum;
+    const v = rows[shift2(target, -i)]?.precipitation_sum;
     if (v == null) break;
     if (v >= 2) {
       since = i;
@@ -213,15 +330,32 @@ function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOS
     }
   }
   const hourly = raw.hourly ?? {}, soilKey = Object.keys(hourly).find((k) => k.startsWith("soil_moisture")), soil = (hourly.time ?? []).flatMap((t, i) => t.startsWith(target) && hourly[soilKey]?.[i] != null ? [hourly[soilKey][i]] : []);
-  return { ...temporalSummary(rows, target, shift), no_rain_30d: since == null && Array.from({ length: 30 }, (_, i) => rows[shift(target, -i - 1)]?.precipitation_sum).every((v) => Number.isFinite(v) && v < 2), temperature: current.temperature_2m_mean, temperature_min: current.temperature_2m_min, temperature_max: current.temperature_2m_max, rain, days_since_rain: since, rain_lookback_days: 30, humidity: current.relative_humidity_2m_mean, wind: current.wind_speed_10m_max, et0: current.et0_fao_evapotranspiration, soil_moisture: soil.length ? Math.round(soil.reduce((a, b) => a + b, 0) / soil.length * 1e4) / 1e4 : null, elevation: raw.elevation ?? null, temperature_anomaly: null, precipitation_anomaly: null, series: Object.entries(rows).filter(([t]) => t >= start && t <= target).map(([date, v]) => ({ date, temperature: v.temperature_2m_mean, rain: v.precipitation_sum, kind: date >= now ? "forecast" : archive ? "reanalysis" : "recent_model" })), source: { name: "Open-Meteo", url, license: "CC BY 4.0", retrieved_at: fetched, date: target, kind, resolution: "Model variable (~1\u201325 km); una cel\xB7la d\u20191 km no afegeix resoluci\xF3 meteorol\xF2gica.", grid_latitude: raw.latitude, grid_longitude: raw.longitude } };
+  return { daily_rows: rows, ...temporalSummary(rows, target, shift2), no_rain_30d: since == null && Array.from({ length: 30 }, (_, i) => rows[shift2(target, -i - 1)]?.precipitation_sum).every((v) => Number.isFinite(v) && v < 2), temperature: current.temperature_2m_mean, temperature_min: current.temperature_2m_min, temperature_max: current.temperature_2m_max, rain, days_since_rain: since, rain_lookback_days: 30, humidity: current.relative_humidity_2m_mean, wind: current.wind_speed_10m_max, et0: current.et0_fao_evapotranspiration, soil_moisture: soil.length ? Math.round(soil.reduce((a, b) => a + b, 0) / soil.length * 1e4) / 1e4 : null, elevation: raw.elevation ?? null, temperature_anomaly: null, precipitation_anomaly: null, series: Object.entries(rows).filter(([t]) => t >= start && t <= target).map(([date, v]) => ({ date, temperature: v.temperature_2m_mean, rain: v.precipitation_sum, kind: date >= now ? "forecast" : archive ? "reanalysis" : "recent_model" })), source: { name: "Open-Meteo", url, license: "CC BY 4.0", retrieved_at: fetched, date: target, kind, resolution: "Model variable (~1\u201325 km); una cel\xB7la d\u20191 km no afegeix resoluci\xF3 meteorol\xF2gica.", grid_latitude: raw.latitude, grid_longitude: raw.longitude } };
 }
 async function weatherMany(db, points, target, options = {}) {
   if (!points.length) return [];
   const { url, params } = weatherRequest(target);
-  const { value: raw, fetched } = await cachedFetch(db, url, { ...params, latitude: points.map((p) => p.lat.toFixed(6)).join(","), longitude: points.map((p) => p.lon.toFixed(6)).join(",") }, options);
-  const data = Array.isArray(raw) ? raw : [raw];
-  if (data.length !== points.length) throw new Error("Resposta meteorol\xF2gica incompleta.");
-  return data.map((r) => parseWeather(r, target, fetched));
+  let bases, modelError;
+  try {
+    const { value: raw, fetched } = await cachedFetch(db, url, { ...params, latitude: points.map((p) => p.lat.toFixed(6)).join(","), longitude: points.map((p) => p.lon.toFixed(6)).join(",") }, options);
+    const data = Array.isArray(raw) ? raw : [raw];
+    if (data.length !== points.length) throw new Error("Resposta meteorol\xF2gica incompleta.");
+    bases = data.map((r) => parseWeather(r, target, fetched));
+  } catch (e) {
+    options.signal?.throwIfAborted();
+    modelError = e;
+    let heights = [];
+    try {
+      const { value } = await cachedFetch(db, "https://api.open-meteo.com/v1/elevation", { latitude: points.map((p) => p.lat).join(","), longitude: points.map((p) => p.lon).join(",") }, options);
+      heights = value.elevation || [];
+    } catch {
+      options.signal?.throwIfAborted();
+    }
+    bases = points.map((p, i) => ({ daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: Number.isFinite(heights[i]) ? heights[i] : null, source: { name: "Open-Meteo", kind: "unavailable", retrieved_at: (/* @__PURE__ */ new Date()).toISOString(), resolution: "Model no disponible." } }));
+  }
+  const result = await observedWeatherMany(cachedFetch, db, points, bases, target, today(), options);
+  if (modelError && result.every((w) => w.temperature == null && w.rain["14"] == null)) throw modelError;
+  return result;
 }
 async function weather(db, lat, lon, target, options = {}) {
   return (await weatherMany(db, [{ lat, lon }], target, options))[0];
@@ -290,6 +424,7 @@ function compareDetection(rows) {
 }
 export {
   cell,
+  clearObservationCache,
   comarca,
   compareDetection,
   dataQuality,
