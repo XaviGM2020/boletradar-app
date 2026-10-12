@@ -1,4 +1,4 @@
-import {coarsePoints,refinePoints,distanceKm,viewportCells} from './search-grid.js';
+import {coarsePoints,refinePoints,radiiWithin,distanceKm,viewportCells} from './search-grid.js';
 import {fetchCells} from './area-explorer.js';
 import {createVariableLayers,createVariableControl} from './map-variables.js';
 import {predict,extract,comarca,cell,dataQuality,suitability,compareDetection} from './weather-client.js';
@@ -58,7 +58,7 @@ $('locate').addEventListener('click',async()=>{if(!confirm('Permets utilitzar la
 $('outing-gps').addEventListener('click',async()=>{if(!$('gps-consent').checked)return notice('Marca primer el consentiment de geolocalització.');try{gps=await locate();$('gps-status').textContent='Ubicació privada afegida. Es desa només en aquest dispositiu.';dirtyForm=true;}catch(e){notice(e.message);}});
 $('gps-consent').addEventListener('change',()=>{if(!$('gps-consent').checked){gps=null;$('gps-status').textContent='Sense coordenades.';}});
 $('map-comarca').addEventListener('change',()=>{const f=boundaries.features.find(f=>f.properties.NOMCOMAR===$('map-comarca').value);if(f)map.fitBounds(L.geoJSON(f).getBounds());});
-async function renderRanking(){try{const data={zones:(await getMeta('search-results')||[]).filter(p=>p.environment.date===$('prediction-date').value)};if(!data)throw new Error('Sense rànquing guardat per a aquesta data.');if(navigator.onLine)await setMeta('ranking:'+$('prediction-date').value,data);const species=$('species').value;const min=Number($('rank-min').value),max=Number($('rank-max').value);const filtered=data.zones.filter(p=>score(p)!=null&&(!$('rank-comarca').value||p.comarca===$('rank-comarca').value)&&p.environment.weather.elevation!=null&&p.environment.weather.elevation>=min&&p.environment.weather.elevation<=max).sort((a,b)=>score(b)-score(a)).slice(0,10);$('ranking').innerHTML=filtered.map(p=>`<article class="card"><span class="eyebrow">${esc(p.comarca)}</span><h2>${score(p)}/100</h2><p>${esc(p.environment.date)} · ${format(p.environment.weather.elevation,' m')} · Pluja: ${format(p.environment.weather.rain['14'],' mm')}</p>${qualityHTML(p)}${destination(p)}<p>${esc(p.access)}</p><button data-zone="${esc(p.cell.id)}">Veure cel·la</button></article>`).join('');for(const b of $('ranking').querySelectorAll('button'))b.onclick=()=>{const p=filtered.find(p=>p.cell.id===b.dataset.zone);show('mapa');map.setView([p.cell.lat,p.cell.lon],12);current=p;selection=p.cell;draw(p);$('zone-details').innerHTML=detail(p);};}catch(e){$('ranking').textContent=e.message;}}
+async function renderRanking(){try{const data={zones:(await getMeta('search-results')||[]).filter(p=>p.environment.date===$('prediction-date').value)};if(!data)throw new Error('Sense rànquing guardat per a aquesta data.');if(navigator.onLine)await setMeta('ranking:'+$('prediction-date').value,data);const species=$('species').value;const min=Number($('rank-min').value),max=Number($('rank-max').value);const filtered=data.zones.filter(p=>score(p)!=null&&(!$('rank-comarca').value||p.comarca===$('rank-comarca').value)&&p.environment.weather.elevation!=null&&p.environment.weather.elevation>=min&&p.environment.weather.elevation<=max).sort((a,b)=>score(b)-score(a));$('ranking').innerHTML=filtered.map(p=>`<article class="card"><span class="eyebrow">${esc(p.comarca)}</span><h2>${score(p)}/100</h2><p>${esc(p.environment.date)} · ${format(p.environment.weather.elevation,' m')} · Pluja: ${format(p.environment.weather.rain['14'],' mm')}</p>${qualityHTML(p)}${destination(p)}<p>${esc(p.access)}</p><button data-zone="${esc(p.cell.id)}">Veure cel·la</button></article>`).join('');for(const b of $('ranking').querySelectorAll('button'))b.onclick=()=>{const p=filtered.find(p=>p.cell.id===b.dataset.zone);show('mapa');map.setView([p.cell.lat,p.cell.lon],12);current=p;selection=p.cell;draw(p);$('zone-details').innerHTML=detail(p);};}catch(e){$('ranking').textContent=e.message;}}
 function cancelViewport(){++viewVersion;viewAbort?.abort();if($('load-map-area'))$('load-map-area').disabled=false;}
 async function loadViewport(){
  cancelViewport();viewAbort=new AbortController();const signal=viewAbort.signal,version=viewVersion,target=$('prediction-date').value;
@@ -80,10 +80,14 @@ async function recommend(lat,lon){
  const rank=()=>results.filter(p=>score(p)!=null&&score(p)>0&&p.environment.forest.forest_type!=='none'&&Number.isFinite(p.environment.forest.tree_cover)&&p.environment.forest.tree_cover>=20).sort((a,b)=>score(b)-score(a));
  try{
   if(!navigator.onLine)throw new Error('Cal connexió per comparar nous punts. Les recomanacions guardades són a Millors zones.');
-  const coarse=candidates(coarsePoints(center,radius));if(!coarse.length)throw new Error('No hi ha punts de Catalunya dins del radi i la comarca triats.');
+
   const sample=async(cells,phase)=>{if(!cells.length)return;const rows=await fetchCells(cells,target,{signal,onProgress:(n,total)=>{if(version===predictionVersion)notice(`${phase} · ${n}/${total} punts · radi ${radius} km`);}});signal.throwIfAborted();results.push(...rows);errors+=rows.filter(p=>p.environment.errors.length).length;};
-  await sample(coarse,'Exploració de l’àrea');if(version!==predictionVersion)return;
-  await sample(candidates(refinePoints(center,radius,rank().map(p=>p.cell),results.map(p=>p.cell))),'Refinant les millors zones');if(version!==predictionVersion)return;
+  for(const level of radiiWithin(radius)){
+   await sample(candidates(coarsePoints(center,level)),`Exploració fins a ${level} km`);if(version!==predictionVersion)return;
+   const localBest=rank().filter(p=>distanceKm(center,p.cell)<=level);
+   await sample(candidates(refinePoints(center,level,localBest.map(p=>p.cell),results.map(p=>p.cell))),`Refinament fins a ${level} km`);if(version!==predictionVersion)return;
+  }
+  if(!results.length)throw new Error('No hi ha punts de Catalunya dins del radi i la comarca triats.');
   variables.removeWhere(p=>!p.cell.id.startsWith('view:'));for(const marker of markers.values())marker.remove();markers.clear();
   const ranked=rank();await setMetaMany([['saved-map-points',results],['search-results',ranked],['saved-predictions',ranked]]);if(version!==predictionVersion)return;
   current=ranked[0]||null;selection=current?.cell||null;

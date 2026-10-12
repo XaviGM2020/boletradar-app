@@ -1,6 +1,7 @@
 export function distanceKm(a,b){const rad=Math.PI/180,dlat=(b.lat-a.lat)*rad,dlon=(b.lon-a.lon)*rad,v=Math.sin(dlat/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dlon/2)**2;return 6371*2*Math.atan2(Math.sqrt(v),Math.sqrt(1-v));}
 function offset(p,r,angle){const rad=angle*Math.PI/180;return {lat:p.lat+r*Math.cos(rad)/111.32,lon:p.lon+r*Math.sin(rad)/(111.32*Math.cos(p.lat*Math.PI/180))};}
-export function coarsePoints(center,radius){if(![5,10,20,40].includes(radius))throw new Error('Radi de cerca no vàlid');return [center,...[.4,.85].flatMap(f=>Array.from({length:6},(_,i)=>offset(center,radius*f,i*60+(f>.5?30:0))))];}
+export function radiiWithin(radius){if(![5,10,20,40].includes(radius))throw new Error('Radi de cerca no vàlid');return [5,10,20,40].filter(r=>r<=radius);}
+export function coarsePoints(center,radius){return [center,...radiiWithin(radius).flatMap(r=>[.4,.85].flatMap(f=>Array.from({length:6},(_,i)=>offset(center,r*f,i*60+(f>.5?30:0)))))];}
 export function refinePoints(center,radius,best,seen=[]){const step=Math.max(1,radius*.12);return best.slice(0,2).flatMap(p=>Array.from({length:6},(_,i)=>offset(p,step,i*60))).filter(p=>distanceKm(center,p)<=radius-.6&&!seen.some(q=>distanceKm(p,q)<.8));}
 // A fixed geographic grid, aligned between reloads. At most 24 samples per view.
 export function viewportCells(bounds,inside){
