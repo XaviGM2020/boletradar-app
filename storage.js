@@ -9,6 +9,6 @@ export const setMeta=(k,v)=>transaction('meta','readwrite',s=>s.put(v,k));
 export const setMetaMany=entries=>transaction('meta','readwrite',s=>{for(const [key,value] of entries)s.put(value,key);});
 export const clear=async()=>{await transaction('outings','readwrite',s=>s.clear());await transaction('meta','readwrite',s=>s.clear());};
 
-export const clearSearch=()=>transaction('meta','readwrite',s=>{const c=s.openCursor();c.onsuccess=()=>{const row=c.result;if(!row)return;if(/^(weather:|area:|prediction:|ranking:|saved-predictions$|saved-map-points$|saved-view$|search-results$)/.test(String(row.key)))row.delete();row.continue();};});
+export const clearSearch=()=>transaction('meta','readwrite',s=>{const c=s.openCursor();c.onsuccess=()=>{const row=c.result;if(!row)return;if(/^(weather:|area:|prediction:|ranking:|saved-predictions$|saved-map-points$|saved-view$|search-results$|search-origin$)/.test(String(row.key)))row.delete();row.continue();};});
 
 export const removeMeta=k=>transaction('meta','readwrite',s=>s.delete(k));
