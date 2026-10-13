@@ -78,7 +78,7 @@ async function recommend(lat,lon,origin=null){
  searchAbort?.abort();searchAbort=new AbortController();const signal=searchAbort.signal,version=++predictionVersion;const previous=searchCenter;searchCenter={...(origin||(previous&&Math.abs(previous.lat-lat)<1e-8&&Math.abs(previous.lon-lon)<1e-8?previous:{kind:'map-point'})),lat,lon};
  const target=$('prediction-date').value,nationwide=$('search-radius').value==='all',radius=nationwide?'all':Number($('search-radius').value),center={lat,lon},county=nationwide?'':$('map-comarca').value;if(nationwide)$('map-comarca').value='';originLayer.set(searchCenter,radius);if(nationwide)map.fitBounds(L.geoJSON(boundaries).getBounds());
  $('zone-details').setAttribute('aria-busy','true');$('recommend').disabled=true;notice('Explorant l’àrea de cerca…');
- const seen=new Set(),results=[];let errors=0;
+ const seen=new Set(),results=[];let errors=0,interrupted=null;
  const eligible=p=>comarca(p.lat,p.lon)&&(!county||comarca(p.lat,p.lon)===county)&&(nationwide||distanceKm(center,p)<=radius);
  const candidates=points=>points.map(p=>{const c=cell(p.lat,p.lon);if(p.county&&comarca(c.lat,c.lon)!==p.county){c.lat=p.lat;c.lon=p.lon;c.id+=':'+p.county;}return c;}).filter(p=>{if(!eligible(p)||seen.has(p.id))return false;seen.add(p.id);return true;});
  const rank=()=>results.filter(p=>score(p)!=null&&score(p)>0&&p.environment.forest.forest_type!=='none'&&Number.isFinite(p.environment.forest.tree_cover)&&p.environment.forest.tree_cover>=20).sort((a,b)=>score(b)-score(a));
@@ -86,6 +86,7 @@ async function recommend(lat,lon,origin=null){
   if(!navigator.onLine)throw new Error('Cal connexió per comparar nous punts. Les recomanacions guardades són a Millors zones.');
 
   const sample=async(cells,phase)=>{if(!cells.length)return;const rows=await fetchCells(cells,target,{signal,onProgress:(n,total)=>{if(version===predictionVersion)notice(`${phase} · ${n}/${total} punts · ${nationwide?'Tot Catalunya':'radi '+radius+' km'}`);}});signal.throwIfAborted();results.push(...rows);errors+=rows.filter(p=>p.environment.errors.length).length;};
+  try{
   for(const level of radiiWithin(nationwide?40:radius)){
    await sample(candidates(coarsePoints(center,level)),`Exploració fins a ${level} km`);if(version!==predictionVersion)return;
    const localBest=rank().filter(p=>distanceKm(center,p.cell)<=level);
@@ -97,13 +98,14 @@ async function recommend(lat,lon,origin=null){
    const best=rank().filter(p=>distanceKm(center,p.cell)>40).slice(0,4);
    for(const p of best){await sample(candidates(refinePoints(p.cell,10,[p.cell],results.map(p=>p.cell))),'Refinant les millors zones de Catalunya');if(version!==predictionVersion)return;}
   }
+  }catch(e){signal.throwIfAborted();if(!results.length)throw e;interrupted=e.message;}
   if(!results.length)throw new Error('No hi ha punts de Catalunya dins del radi i la comarca triats.');
   variables.removeWhere(p=>!p.cell.id.startsWith('view:'));for(const marker of markers.values())marker.remove();markers.clear();
   const ranked=rank();await setMetaMany([['saved-map-points',results],['search-results',ranked],['saved-predictions',ranked],['search-origin',{...searchCenter,radius,date:target,filter_county:county}]]);if(version!==predictionVersion)return;
   current=ranked[0]||null;selection=current?.cell||null;
   for(const p of results)variables.upsert(p,{recommendable:ranked.some(v=>v.cell.id===p.cell.id)});for(const p of ranked)draw(p);
-  if(current){if(nationwide)map.fitBounds(L.geoJSON(boundaries).getBounds());else map.fitBounds(L.latLngBounds([[lat,lon],...ranked.map(p=>[p.cell.lat,p.cell.lon])]).pad(.3));$('zone-details').innerHTML='<span class="eyebrow">PROPOSTA DE L’APP</span>'+detail(current);notice(`Comparats ${results.length} punts ${nationwide?'a tot Catalunya':'en un radi de '+radius+' km'} amb exploració i refinament. ${errors?'Hi ha fonts incompletes en alguns punts. ':''}La proposta és orientativa.`);}
-  else{$('zone-details').innerHTML='<h2>Sense proposta amb prou dades</h2><p>Cap candidat amb índex disponible i cobertura arbòria coneguda ≥20 %. Pots explorar les variables al mapa o ampliar el radi.</p>';notice('Cap candidat forestal amb prou dades en aquesta cerca.');}
+  if(current){if(nationwide)map.fitBounds(L.geoJSON(boundaries).getBounds());else map.fitBounds(L.latLngBounds([[lat,lon],...ranked.map(p=>[p.cell.lat,p.cell.lon])]).pad(.3));$('zone-details').innerHTML='<span class="eyebrow">PROPOSTA DE L’APP</span>'+detail(current);notice(`Comparats ${results.length} punts ${nationwide?'a tot Catalunya':'en un radi de '+radius+' km'} amb exploració i refinament. ${interrupted?'Cerca parcial: '+interrupted+' ':''}${errors?'Hi ha fonts incompletes en alguns punts. ':''}La proposta és orientativa.`);}
+  else{$('zone-details').innerHTML='<h2>Sense proposta amb prou dades</h2><p>Cap candidat amb índex disponible i cobertura arbòria coneguda ≥20 %. Pots explorar les variables al mapa o ampliar el radi.</p>';notice((interrupted?'Cerca parcial: '+interrupted+' ':'')+'Cap candidat forestal amb prou dades en aquesta cerca.');}
   await renderRanking();
  }catch(e){if(version===predictionVersion&&e.name!=='AbortError')notice(e.message);}finally{if(version===predictionVersion){$('zone-details').removeAttribute('aria-busy');$('recommend').disabled=false;}}
 }

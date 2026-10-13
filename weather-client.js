@@ -269,14 +269,29 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
   Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, String(v)));
   const key = await hash(u.toString()), now = Date.now();
   if (!db) {
-    try {
-      const response = await fetch(u, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25e3)]) : AbortSignal.timeout(25e3) });
-      if (!response.ok) throw new Error("Font ambiental no disponible (HTTP " + response.status + ").");
-      return { value: text ? await response.text() : await response.json(), fetched: (/* @__PURE__ */ new Date()).toISOString() };
-    } catch (e) {
-      signal?.throwIfAborted();
-      if (e.name === "TypeError" || e.name === "TimeoutError") throw new Error("No es pot consultar la font ambiental. Revisa la connexi\xF3 o torna-ho a provar.");
-      throw e;
+    const provider = new URL(url).hostname.includes("open-meteo.com") ? "Open-Meteo" : new URL(url).hostname;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        signal?.throwIfAborted();
+        const response = await fetch(u, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25e3)]) : AbortSignal.timeout(25e3) });
+        if (!response.ok) {
+          const error = new Error(`${provider}: font no disponible (HTTP ${response.status}).`);
+          error.status = response.status;
+          error.retryable = [502, 503, 504].includes(response.status);
+          throw error;
+        }
+        return { value: text ? await response.text() : await response.json(), fetched: (/* @__PURE__ */ new Date()).toISOString() };
+      } catch (e) {
+        signal?.throwIfAborted();
+        const transient = e.name === "TypeError" || e.name === "TimeoutError" || e.retryable;
+        if (attempt === 0 && transient) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          signal?.throwIfAborted();
+          continue;
+        }
+        if (e.name === "TypeError" || e.name === "TimeoutError") throw new Error(`${provider} no respon o no \xE9s accessible. Revisa la connexi\xF3 o torna-ho a provar m\xE9s tard.`);
+        throw e;
+      }
     }
   }
   const saved = await db.prepare("SELECT payload FROM cache WHERE key=? AND expires>?").bind(key, now).first();
@@ -308,7 +323,7 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
 function weatherRequest(target) {
   const now = today(), start = shift2(target, -30), archive = target < shift2(now, -5);
   const url = archive ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast";
-  const params = { timezone: "Europe/Madrid", daily: "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,wind_speed_10m_max,et0_fao_evapotranspiration", ...archive ? { start_date: start, end_date: target, hourly: "soil_moisture_0_to_7cm" } : { past_days: 35, forecast_days: 11, hourly: "soil_moisture_0_to_1cm" } };
+  const params = { timezone: "Europe/Madrid", daily: "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,wind_speed_10m_max,et0_fao_evapotranspiration", ...archive ? { start_date: start, end_date: target, hourly: "soil_moisture_0_to_7cm" } : { start_date: start, end_date: target, start_hour: target + "T00:00", end_hour: target + "T23:00", hourly: "soil_moisture_0_to_1cm" } };
   return { url, params, archive, start, now };
 }
 function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOString()) {
@@ -334,6 +349,24 @@ function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOS
 }
 async function weatherMany(db, points, target, options = {}) {
   if (!points.length) return [];
+  if (points.length > 8) {
+    const result2 = [];
+    let firstError;
+    for (let i = 0; i < points.length; i += 16) {
+      const batches = [points.slice(i, i + 8), points.slice(i + 8, i + 16)].filter((p) => p.length);
+      const settled = await Promise.allSettled(batches.map((p) => weatherMany(db, p, target, options)));
+      options.signal?.throwIfAborted();
+      settled.forEach((r, j) => {
+        if (r.status === "fulfilled") result2.push(...r.value);
+        else {
+          firstError ??= r.reason;
+          result2.push(...batches[j].map(() => ({ daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: null, error: r.reason.message, source: { name: "Open-Meteo", kind: "unavailable", date: target } })));
+        }
+      });
+    }
+    if (firstError && result2.every((w) => w.temperature == null && w.rain?.["14"] == null)) throw firstError;
+    return result2;
+  }
   const { url, params } = weatherRequest(target);
   let bases, modelError;
   try {
@@ -404,7 +437,7 @@ async function forest(db, lat, lon, target, options = {}) {
 async function extract(db, lat, lon, target, options = {}) {
   const result = await Promise.allSettled([Object.hasOwn(options, "weather") ? Promise.resolve(options.weather) : weather(db, lat, lon, target, options), forest(db, lat, lon, target, options), Object.hasOwn(options, "terrain") ? Promise.resolve([options.terrain]) : terrainMany(db, [{ lat, lon }], options)]);
   options.signal?.throwIfAborted();
-  return { date: target, weather: result[0].status === "fulfilled" ? result[0].value : { temperature: null, rain: {}, source: null }, forest: result[1].status === "fulfilled" ? result[1].value : { tree_cover: null, forest_type: "unknown", source: null }, soil: { ph: null, organic_matter: null, drainage: null }, terrain: result[2].status === "fulfilled" ? result[2].value[0] : { slope: null, aspect: null, elevation: null }, errors: result.flatMap((r, i) => r.status === "rejected" ? [(i === 0 ? "Meteorologia: " : i === 1 ? "Bosc: " : "Relleu: ") + r.reason.message] : i === 1 ? r.value.errors || [] : []), updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+  return { date: target, weather: result[0].status === "fulfilled" ? result[0].value : { temperature: null, rain: {}, source: null }, forest: result[1].status === "fulfilled" ? result[1].value : { tree_cover: null, forest_type: "unknown", source: null }, soil: { ph: null, organic_matter: null, drainage: null }, terrain: result[2].status === "fulfilled" ? result[2].value[0] : { slope: null, aspect: null, elevation: null }, errors: result.flatMap((r, i) => r.status === "rejected" ? [(i === 0 ? "Meteorologia: " : i === 1 ? "Bosc: " : "Relleu: ") + r.reason.message] : i === 1 ? r.value.errors || [] : i === 0 && r.value.error ? ["Meteorologia: " + r.value.error] : []), updated_at: (/* @__PURE__ */ new Date()).toISOString() };
 }
 async function predict(db, lat, lon, target, options = {}) {
   const c = options.cell || cell(lat, lon);
