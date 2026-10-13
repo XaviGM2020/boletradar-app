@@ -1,6 +1,6 @@
-import {weatherMany,terrainMany,predict} from './weather-client.js';
-import {getMeta,setMeta} from './storage.js';
-import {mapLimit} from './search-grid.js';
+import {weatherMany,terrainMany,predict} from './weather-client.js?v=12';
+import {getMeta,setMeta} from './storage.js?v=12';
+import {mapLimit} from './search-grid.js?v=12';
 export async function fetchCells(cells,date,{signal,onProgress=()=>{},offline=false}={}){
  const keys=cells.map(c=>`area:${c.lat.toFixed(6)}:${c.lon.toFixed(6)}:${date}`),result=[],pending=[];
  for(let i=0;i<cells.length;i++){signal?.throwIfAborted();const cached=await getMeta(keys[i]);if(cached?.models?.rovellons?.model==='heuristic-v3'&&(offline||(cached.environment.weather?.observation_version===1&&Number.isFinite(cached.environment.weather?.temperature)&&Number.isFinite(cached.environment.weather?.rain?.['14'])&&Date.now()-Date.parse(cached.environment.updated_at)<21600000))){result[i]={...cached,cell:cells[i]};}else pending.push(i);}
