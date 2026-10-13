@@ -3,6 +3,17 @@ function offset(p,r,angle){const rad=angle*Math.PI/180;return {lat:p.lat+r*Math.
 export function radiiWithin(radius){if(![5,10,20,40].includes(radius))throw new Error('Radi de cerca no vàlid');return [5,10,20,40].filter(r=>r<=radius);}
 export function coarsePoints(center,radius){return [center,...radiiWithin(radius).flatMap(r=>[.4,.85].flatMap(f=>Array.from({length:6},(_,i)=>offset(center,r*f,i*60+(f>.5?30:0)))))];}
 export function refinePoints(center,radius,best,seen=[]){const step=Math.max(1,radius*.12);return best.slice(0,2).flatMap(p=>Array.from({length:6},(_,i)=>offset(p,step,i*60))).filter(p=>distanceKm(center,p)<=radius-.6&&!seen.some(q=>distanceKm(p,q)<.8));}
+// Up to two interior samples per comarca; independent of the user's position.
+export function nationalPoints(boundaries,inside){const points=[];
+ for(const feature of boundaries.features){const name=feature.properties.NOMCOMAR,polygons=feature.geometry.type==='Polygon'?[feature.geometry.coordinates]:feature.geometry.coordinates,candidates=[];
+  for(const polygon of polygons){const ring=polygon[0],xs=ring.map(p=>p[0]),ys=ring.map(p=>p[1]),west=Math.min(...xs),east=Math.max(...xs),south=Math.min(...ys),north=Math.max(...ys),center={lat:(south+north)/2,lon:(west+east)/2};
+   const samples=[center,...[.2,.35,.5,.65,.8].flatMap(y=>[.2,.35,.5,.65,.8].map(x=>({lat:south+(north-south)*y,lon:west+(east-west)*x}))),...ring.map(([lon,lat])=>({lat:lat*.98+center.lat*.02,lon:lon*.98+center.lon*.02}))];
+   for(const p of samples)if(inside(p.lat,p.lon)===name)candidates.push({...p,county:name,centrality:distanceKm(center,p)});
+  }
+  candidates.sort((a,b)=>a.centrality-b.centrality);if(!candidates.length)continue;const first=candidates[0];points.push(first);const second=candidates.find(p=>distanceKm(first,p)>=5);if(second)points.push(second);
+ }
+ return points;
+}
 // A fixed geographic grid, aligned between reloads. At most 24 samples per view.
 export function viewportCells(bounds,inside){
  const south=Math.max(40.45,bounds.south),north=Math.min(42.9,bounds.north),west=Math.max(.1,bounds.west),east=Math.min(3.4,bounds.east);if(south>=north||west>=east)return [];
