@@ -1,3 +1,72 @@
+// hosting/lib/boletradar/browser-source-cache.mjs
+var NAME = "fungix-environment-v1";
+var limits = /* @__PURE__ */ new Map();
+var writes = 0;
+var enabled = () => typeof caches !== "undefined" && typeof caches.open === "function";
+function sourceURL(url, params) {
+  const u = new URL(url);
+  Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, String(v)));
+  u.searchParams.sort();
+  return u.href;
+}
+async function readSource(url) {
+  if (!enabled()) return null;
+  try {
+    const cache = await caches.open(NAME), response = await cache.match(url);
+    if (!response) return null;
+    if (Number(response.headers.get("x-fungix-expires")) <= Date.now()) {
+      await cache.delete(url);
+      return null;
+    }
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+async function writeSource(url, result, ttl) {
+  if (!enabled()) return;
+  try {
+    const cache = await caches.open(NAME);
+    await cache.put(url, Response.json(result, { headers: { "x-fungix-expires": String(Date.now() + ttl) } }));
+    if (++writes % 50 === 0) {
+      const keys = await cache.keys();
+      for (const key of keys.slice(0, Math.max(0, keys.length - 1500))) await cache.delete(key);
+    }
+  } catch {
+  }
+}
+var group = (url) => new URL(url).hostname.endsWith("open-meteo.com") ? "Open-Meteo" : new URL(url).hostname;
+var limitURL = (url) => "https://fungix.invalid/source-limit/" + encodeURIComponent(group(url));
+function limitError(url, until) {
+  const minutes = Math.max(1, Math.ceil((until - Date.now()) / 6e4));
+  const error = new Error(`${group(url)} ha limitat les consultes (HTTP 429). Pots consultar les dades guardades. Torna a provar dades noves d\u2019aqu\xED a ${minutes} min; el l\xEDmit pot durar m\xE9s.`);
+  error.status = 429;
+  error.retryable = false;
+  return error;
+}
+async function assertSourceAvailable(url) {
+  const until = limits.get(group(url));
+  if (until > Date.now()) throw limitError(url, until);
+  const limit = await readSource(limitURL(url));
+  if (limit) {
+    limits.set(group(url), limit.until);
+    throw limitError(url, limit.until);
+  }
+}
+async function recordSourceLimit(url, response) {
+  const retry = response.headers.get("retry-after");
+  let delay = 3e5;
+  if (retry != null) {
+    const seconds = Number(retry);
+    const duration = Number.isFinite(seconds) ? seconds * 1e3 : Date.parse(retry) - Date.now();
+    if (Number.isFinite(duration) && duration > 0) delay = duration;
+  }
+  const until = Date.now() + delay;
+  limits.set(group(url), until);
+  await writeSource(limitURL(url), { until }, delay);
+  return limitError(url, until);
+}
+
 // hosting/lib/boletradar/enrichment.mjs
 var finite = Number.isFinite;
 function temporalSummary(rows, target, shift3) {
@@ -174,7 +243,7 @@ var names = {
   "Populus nigra": "Pollancre",
   "Alnus glutinosa": "Vern"
 };
-function group(name) {
+function group2(name) {
   if (/^Pinus\s/i.test(name)) return "pine";
   if (/^Fagus\s/i.test(name)) return "beech";
   if (/^Quercus\s/i.test(name)) return "oak";
@@ -190,7 +259,7 @@ function parseForest(raw) {
     const name = p["nom_sp" + i];
     if (typeof name !== "string" || !name.trim() || !Number.isFinite(Number(p["id_sp" + i])) || Number(p["id_sp" + i]) <= 0) continue;
     const occupation = Number(p["nm_o" + i]);
-    trees.push({ scientific_name: name.trim(), name: names[name.trim()] || name.trim(), group: group(name.trim()), occupation: Number.isFinite(occupation) && occupation > 0 ? occupation : null });
+    trees.push({ scientific_name: name.trim(), name: names[name.trim()] || name.trim(), group: group2(name.trim()), occupation: Number.isFinite(occupation) && occupation > 0 ? occupation : null });
   }
   const cover = p.nm_fccarb != null && Number.isFinite(Number(p.nm_fccarb)) && Number(p.nm_fccarb) >= 0 && Number(p.nm_fccarb) <= 100 ? Number(p.nm_fccarb) : null;
   const noTrees = !trees.length && cover === 0 && [200, 300, 400].includes(Number(p.id_clamfe)) && p.id_tipobosque === "N";
@@ -269,18 +338,26 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
   Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, String(v)));
   const key = await hash(u.toString()), now = Date.now();
   if (!db) {
+    const stored = await readSource(sourceURL(url, params));
+    signal?.throwIfAborted();
+    if (stored) return stored;
+    await assertSourceAvailable(url);
     const provider = new URL(url).hostname.includes("open-meteo.com") ? "Open-Meteo" : new URL(url).hostname;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         signal?.throwIfAborted();
         const response = await fetch(u, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25e3)]) : AbortSignal.timeout(25e3) });
         if (!response.ok) {
+          if (response.status === 429) throw await recordSourceLimit(url, response);
           const error = new Error(`${provider}: font no disponible (HTTP ${response.status}).`);
           error.status = response.status;
           error.retryable = [502, 503, 504].includes(response.status);
           throw error;
         }
-        return { value: text ? await response.text() : await response.json(), fetched: (/* @__PURE__ */ new Date()).toISOString() };
+        const result = { value: text ? await response.text() : await response.json(), fetched: (/* @__PURE__ */ new Date()).toISOString() };
+        signal?.throwIfAborted();
+        await writeSource(sourceURL(url, params), result, ttl);
+        return result;
       } catch (e) {
         signal?.throwIfAborted();
         const transient = e.name === "TypeError" || e.name === "TimeoutError" || e.retryable;
@@ -369,22 +446,34 @@ async function weatherMany(db, points, target, options = {}) {
   }
   const { url, params } = weatherRequest(target);
   let bases, modelError;
+  const pointParams = (p) => ({ ...params, latitude: p.lat.toFixed(6), longitude: p.lon.toFixed(6) });
+  const stored = db ? points.map(() => null) : await Promise.all(points.map((p) => readSource(sourceURL(url, pointParams(p)))));
+  options.signal?.throwIfAborted();
   try {
-    const { value: raw, fetched } = await cachedFetch(db, url, { ...params, latitude: points.map((p) => p.lat.toFixed(6)).join(","), longitude: points.map((p) => p.lon.toFixed(6)).join(",") }, options);
-    const data = Array.isArray(raw) ? raw : [raw];
-    if (data.length !== points.length) throw new Error("Resposta meteorol\xF2gica incompleta.");
-    bases = data.map((r) => parseWeather(r, target, fetched));
+    const data = [...stored], pending = points.map((_, i) => i).filter((i) => !stored[i]);
+    if (pending.length) {
+      const { value: raw, fetched } = await cachedFetch(db, url, { ...params, latitude: pending.map((i) => points[i].lat.toFixed(6)).join(","), longitude: pending.map((i) => points[i].lon.toFixed(6)).join(",") }, options);
+      const rows = Array.isArray(raw) ? raw : [raw];
+      if (rows.length !== pending.length) throw new Error("Resposta meteorol\xF2gica incompleta.");
+      for (let j = 0; j < pending.length; j++) {
+        const i = pending[j];
+        parseWeather(rows[j], target, fetched);
+        data[i] = { value: rows[j], fetched };
+        if (!db) await writeSource(sourceURL(url, pointParams(points[i])), data[i], Math.max(0, 216e5 - (Date.now() - Date.parse(fetched))));
+      }
+    }
+    bases = data.map((r) => parseWeather(r.value, target, r.fetched));
   } catch (e) {
     options.signal?.throwIfAborted();
     modelError = e;
     let heights = [];
-    try {
+    if (e.status !== 429) try {
       const { value } = await cachedFetch(db, "https://api.open-meteo.com/v1/elevation", { latitude: points.map((p) => p.lat).join(","), longitude: points.map((p) => p.lon).join(",") }, options);
       heights = value.elevation || [];
     } catch {
       options.signal?.throwIfAborted();
     }
-    bases = points.map((p, i) => ({ daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: Number.isFinite(heights[i]) ? heights[i] : null, source: { name: "Open-Meteo", kind: "unavailable", retrieved_at: (/* @__PURE__ */ new Date()).toISOString(), resolution: "Model no disponible." } }));
+    bases = points.map((p, i) => stored[i] ? parseWeather(stored[i].value, target, stored[i].fetched) : { daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: Number.isFinite(heights[i]) ? heights[i] : null, error: e.message, source: { name: "Open-Meteo", kind: "unavailable", retrieved_at: (/* @__PURE__ */ new Date()).toISOString(), resolution: "Model no disponible." } });
   }
   const result = await observedWeatherMany(cachedFetch, db, points, bases, target, today(), options);
   if (modelError && result.every((w) => w.temperature == null && w.rain["14"] == null)) throw modelError;

@@ -7,7 +7,7 @@ export const removeOuting=id=>transaction('outings','readwrite',s=>s.delete(id))
 export const getMeta=k=>transaction('meta','readonly',s=>s.get(k));
 export const setMeta=(k,v)=>transaction('meta','readwrite',s=>s.put(v,k));
 export const setMetaMany=entries=>transaction('meta','readwrite',s=>{for(const [key,value] of entries)s.put(value,key);});
-export const clear=async()=>{await transaction('outings','readwrite',s=>s.clear());await transaction('meta','readwrite',s=>s.clear());};
+export const clear=async()=>{await transaction('outings','readwrite',s=>s.clear());await transaction('meta','readwrite',s=>s.clear());if('caches' in globalThis)await caches.delete('fungix-environment-v1');};
 
 export const clearSearch=()=>transaction('meta','readwrite',s=>{const c=s.openCursor();c.onsuccess=()=>{const row=c.result;if(!row)return;if(/^(weather:|area:|prediction:|ranking:|saved-predictions$|saved-map-points$|saved-view$|search-results$|search-origin$)/.test(String(row.key)))row.delete();row.continue();};});
 
