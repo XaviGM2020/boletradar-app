@@ -279,15 +279,16 @@ function parseForest(raw) {
 function hostCompatibility(f, weights) {
   if (f.forest_type === "none") return { value: 0, partial: false };
   const trees = f.host_trees;
+  const nearby = f.nearby_trees ? `Esp\xE8cies estimades a partir d\u2019un punt a uns ${f.nearby_trees.distance_m} m; poden variar al punt de cerca.` : null;
   if (Array.isArray(trees) && trees.length) {
     const known = trees.filter((t) => Object.hasOwn(weights, t.group));
     const unknown = trees.filter((t) => !Object.hasOwn(weights, t.group)).map((t) => t.name || t.scientific_name || "Esp\xE8cie no identificada");
-    if (!known.length) return { value: null, partial: true, reason: "El model encara no t\xE9 una compatibilitat definida per a: " + unknown.join(", ") + "." };
+    if (!known.length) return { value: null, partial: true, reason: [nearby, "El model encara no t\xE9 una compatibilitat definida per a: " + unknown.join(", ") + "."].filter(Boolean).join(" ") };
     const weighted = known.every((t) => Number.isFinite(t.occupation) && t.occupation > 0);
     const denominator = known.reduce((n, t) => n + (weighted ? t.occupation : 1), 0);
     const needsProportions = !weighted && new Set(known.map((t) => weights[t.group])).size > 1;
-    const reasons = [...unknown.length ? ["Compatibilitat encara no definida per a: " + unknown.join(", ") + "."] : [], ...needsProportions ? ["Falten les proporcions dels arbres; s\u2019utilitza una mitjana provisional."] : []];
-    return { value: known.reduce((n, t) => n + weights[t.group] * (weighted ? t.occupation : 1), 0) / denominator, partial: unknown.length > 0 || needsProportions, reason: reasons.join(" ") || null };
+    const reasons = [...nearby ? [nearby] : [], ...unknown.length ? ["Compatibilitat encara no definida per a: " + unknown.join(", ") + "."] : [], ...needsProportions ? ["Falten les proporcions dels arbres; s\u2019utilitza una mitjana provisional."] : []];
+    return { value: known.reduce((n, t) => n + weights[t.group] * (weighted ? t.occupation : 1), 0) / denominator, partial: !!nearby || unknown.length > 0 || needsProportions, reason: reasons.join(" ") || null };
   }
   const type = f.forest_type ?? "unknown";
   return { value: type !== "unknown" && Object.hasOwn(weights, type) ? weights[type] : null, partial: false, reason: type !== "unknown" && Object.hasOwn(weights, type) ? null : "La cartografia no proporciona esp\xE8cies d\u2019arbres valorables en aquest punt." };
@@ -520,15 +521,32 @@ async function forestSpecies(db, lat, lon, target, options = {}) {
   const source = { name: "MITECO \xB7 Mapa Forestal d\u2019Espanya", url: "https://geoserver.iepnb.es/geoserver/foto_fija_mfe/wms", reference_period: "Foto fixa 2021", resolution: "Cartografia forestal per pol\xEDgons; no \xE9s un inventari de cada arbre.", license: "MITECO \xB7 consulta les condicions de reutilitzaci\xF3", quality: "Esp\xE8cies registrades al mapa, fins a tres per pol\xEDgon. No confirma els arbres actuals ni recull necess\xE0riament totes les esp\xE8cies." };
   if (target < "2022-01-01") return { forest_type: "unknown", host_trees: [], species_source: { ...source, quality: "La foto fixa de 2021 no s\u2019aplica a consultes anteriors a 2022." } };
   const layer = "ff_uso";
-  const { value: raw, fetched } = await cachedFetch(db, source.url, { service: "WMS", version: "1.1.1", request: "GetFeatureInfo", layers: layer, query_layers: layer, styles: "", format: "image/png", srs: "EPSG:4326", bbox: `${lon - 1e-3},${lat - 1e-3},${lon + 1e-3},${lat + 1e-3}`, width: 101, height: 101, x: 50, y: 50, info_format: "application/json", feature_count: 1, buffer: 0, propertyName: "id_ff21,id_clamfe,descr_clamfe,id_tipobosque,descr_forarb,nm_fccarb,id_sp1,nom_sp1,nm_o1,id_sp2,nom_sp2,nm_o2,id_sp3,nom_sp3,nm_o3" }, { ttl: 2592e6, ...options });
-  return { ...parseForest(raw), species_source: { ...source, retrieved_at: fetched } };
+  const query = async (y, x) => {
+    const { value: raw, fetched } = await cachedFetch(db, source.url, { service: "WMS", version: "1.1.1", request: "GetFeatureInfo", layers: layer, query_layers: layer, styles: "", format: "image/png", srs: "EPSG:4326", bbox: `${x - 1e-3},${y - 1e-3},${x + 1e-3},${y + 1e-3}`, width: 101, height: 101, x: 50, y: 50, info_format: "application/json", feature_count: 1, buffer: 0, propertyName: "id_ff21,id_clamfe,descr_clamfe,id_tipobosque,descr_forarb,nm_fccarb,id_sp1,nom_sp1,nm_o1,id_sp2,nom_sp2,nm_o2,id_sp3,nom_sp3,nm_o3" }, { ttl: 2592e6, ...options });
+    return { ...parseForest(raw), species_source: { ...source, retrieved_at: fetched } };
+  };
+  const exact = await query(lat, lon);
+  if (exact.forest_type === "none" || exact.host_trees.length) return exact;
+  for (const distance of [100, 250, 500]) {
+    options.signal?.throwIfAborted();
+    const candidates = [[lat + distance / 111320, lon], [lat, lon + distance / (111320 * Math.cos(lat * Math.PI / 180))], [lat - distance / 111320, lon], [lat, lon - distance / (111320 * Math.cos(lat * Math.PI / 180))]];
+    const results = await Promise.allSettled(candidates.map(([y, x]) => query(y, x)));
+    options.signal?.throwIfAborted();
+    const match = results.findIndex((r) => r.status === "fulfilled" && r.value.host_trees.length > 0);
+    if (match >= 0) {
+      const result = results[match].value, [y, x] = candidates[match];
+      return { ...result, mapped_tree_cover: exact.mapped_tree_cover, formation: exact.formation, land_class: exact.land_class, nearby_trees: { latitude: y, longitude: x, distance_m: distance, method: "Primer punt amb esp\xE8cies de la mostra: quatre direccions a 100, 250 i 500 m; no \xE9s una cerca exhaustiva." }, species_source: { ...result.species_source, quality: source.quality + ` Esp\xE8cies d\u2019un punt proper a uns ${distance} m; poden no correspondre al punt de cerca.` } };
+    }
+    if (results.every((r) => r.status === "rejected")) break;
+  }
+  return exact;
 }
 async function forest(db, lat, lon, target, options = {}) {
   const [cover, trees] = await Promise.allSettled([treeCover(db, lat, lon, target, options), forestSpecies(db, lat, lon, target, options)]);
   const species = trees.status === "fulfilled" ? trees.value : { forest_type: "unknown", host_trees: [], species_source: null };
   const coverage = cover.status === "fulfilled" ? cover.value : { tree_cover: null, source: null };
   const fallback = coverage.tree_cover == null && species.mapped_tree_cover != null;
-  return { ...species, tree_cover: fallback ? species.mapped_tree_cover : coverage.tree_cover, source: fallback ? species.species_source : coverage.source, errors: [...cover.status === "rejected" ? ["Cobertura arb\xF2ria: " + cover.reason.message] : [], ...trees.status === "rejected" ? ["Esp\xE8cies d\u2019arbres: " + trees.reason.message] : []] };
+  return { ...species, lookup_version: 1, tree_cover: fallback ? species.mapped_tree_cover : coverage.tree_cover, source: fallback ? species.species_source : coverage.source, errors: [...cover.status === "rejected" ? ["Cobertura arb\xF2ria: " + cover.reason.message] : [], ...trees.status === "rejected" ? ["Esp\xE8cies d\u2019arbres: " + trees.reason.message] : []] };
 }
 async function extract(db, lat, lon, target, options = {}) {
   const result = await Promise.allSettled([Object.hasOwn(options, "weather") ? Promise.resolve(options.weather) : weather(db, lat, lon, target, options), forest(db, lat, lon, target, options), Object.hasOwn(options, "terrain") ? Promise.resolve([options.terrain]) : terrainMany(db, [{ lat, lon }], options)]);

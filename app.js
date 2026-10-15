@@ -1,11 +1,11 @@
-import {createSearchOrigin} from './search-origin.js?v=16';
-import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=16';
-import {coarsePoints,refinePoints,radiiWithin,nationalPoints,distanceKm,viewportCells} from './search-grid.js?v=16';
-import {fetchCells} from './area-explorer.js?v=16';
-import {createVariableLayers,createVariableControl} from './map-variables.js?v=16';
-import {predict,extract,comarca,cell,dataQuality,suitability,compareDetection,clearObservationCache} from './weather-client.js?v=16';
-import {migrateLegacy} from './migration.js?v=16';
-import {allOutings,getOuting,putOuting,getMeta,setMeta,setMetaMany,clear,clearSearch,removeOuting} from './storage.js?v=16';
+import {createSearchOrigin} from './search-origin.js?v=17';
+import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=17';
+import {coarsePoints,refinePoints,radiiWithin,nationalPoints,distanceKm,viewportCells} from './search-grid.js?v=17';
+import {fetchCells} from './area-explorer.js?v=17';
+import {createVariableLayers,createVariableControl} from './map-variables.js?v=17';
+import {predict,extract,comarca,cell,dataQuality,suitability,compareDetection,clearObservationCache} from './weather-client.js?v=17';
+import {migrateLegacy} from './migration.js?v=17';
+import {allOutings,getOuting,putOuting,getMeta,setMeta,setMetaMany,clear,clearSearch,removeOuting} from './storage.js?v=17';
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const format=(v,u='')=>v==null?'Desconegut':Number(v).toLocaleString('ca-ES',{maximumFractionDigits:1})+u;
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -28,7 +28,7 @@ function destination(p){
 function forestSummary(f){
  const trees=f.host_trees||[];
  const names=trees.map(t=>esc(t.name)+(t.name!==t.scientific_name?' ('+esc(t.scientific_name)+')':'')).join(' · ');
- if(names)return `<p><strong>Arbres registrats al mapa:</strong> ${names}</p><p class="subtle">${esc(f.species_source?.reference_period||'Cartografia forestal')} · No és una identificació actual de cada arbre.</p>`;
+ if(names)return `<p><strong>${f.nearby_trees?'Arbres cartografiats en un punt proper':'Arbres registrats al mapa'}:</strong> ${names}${f.nearby_trees?` · a uns ${format(f.nearby_trees.distance_m,' m')} (${esc(f.nearby_trees.latitude.toFixed(5))+'° lat'}, ${esc(f.nearby_trees.longitude.toFixed(5))+'° lon'}). Estimació per proximitat; poden variar al punt de cerca.`:''}</p><p class="subtle">${esc(f.species_source?.reference_period||'Cartografia forestal')} · No és una identificació actual de cada arbre.</p>`;
  return `<p><strong>Arbres registrats al mapa:</strong> ${f.forest_type==='none'?'Zona cartografiada sense arbrat.':'Sense informació disponible.'}</p>`;
 }
 function qualityHTML(p){const m=p.models[$('species').value],q=dataQuality(p.environment,m);return `<div class="data-quality"><strong>Dades: ${esc(q.label)}</strong><span>${q.available}/${q.total} variables principals disponibles${q.stale?' · meteorologia guardada fa '+q.age_hours+' h':''}</span><span>Cartografia forestal: ${esc(q.cartography_period)}</span>${q.missing.length?'<span>Falten: '+esc(q.missing.join(', '))+'</span>':''}${m.quality==='provisional'?'<span>'+esc(m.host_note||'Compatibilitat dels arbres parcial: consulta les espècies i les dades que falten.')+'</span>':''}<span>Validació predictiva: pendent</span></div>`;}
@@ -44,7 +44,7 @@ async function fetchPrediction(lat,lon,target,options={}){
  if(!/^\d{4}-\d{2}-\d{2}$/.test(target)||target<'1941-01-01'||target>$('prediction-date').max)throw new Error('Data fora del període disponible.');
  if(options.signal?.aborted)throw new DOMException('Cerca cancel·lada','AbortError');
  const key=`prediction:${lat.toFixed(4)}:${lon.toFixed(4)}:${target}`,cached=await getMeta(key);
- if(cached?.models?.rovellons?.model==='heuristic-v3'&&cached.environment.weather?.observation_version===1&&!cached.environment.weather?.observation?.unavailable&&Date.now()-Date.parse(cached.environment.updated_at)<21600000)return cached;
+ if(cached?.models?.rovellons?.model==='heuristic-v3'&&cached.environment.forest?.lookup_version===1&&cached.environment.weather?.observation_version===1&&!cached.environment.weather?.observation?.unavailable&&Date.now()-Date.parse(cached.environment.updated_at)<21600000)return cached;
  const p=await predict(null,lat,lon,target,options);
  if(options.signal?.aborted)throw new DOMException('Cerca cancel·lada','AbortError');
  if(!p.environment.errors.length)await setMeta(key,p);

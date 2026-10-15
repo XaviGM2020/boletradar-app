@@ -1,4 +1,4 @@
-import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=16';
+import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=17';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=(v,unit='',digits=1)=>Number.isFinite(v)?v.toLocaleString('ca-ES',{maximumFractionDigits:digits})+unit:'Sense dades';
 const factor=(p,s,name)=>p.models?.[s]?.factors?.find(f=>f.name===name)?.value??null;
@@ -11,7 +11,7 @@ const bins=(value,breaks)=>!Number.isFinite(value)?'#87918a':colors[breaks.filte
 const treeNames=p=>(forest(p).host_trees||[]).map(t=>t.name!==t.scientific_name?`${t.name} (${t.scientific_name})`:t.name).join(' · ');
 const weatherSource=p=>`${weather(p).source?.name||'Font meteorològica desconeguda'} · ${weather(p).source?.resolution||'Resolució no disponible'}`;
 const variableWeatherSource=(p,key)=>{const w=weather(p),kind=originKind(w,key);return `${originLabel(kind)} · ${kind==='observed'?'Meteocat XEMA · resum diari d’observacions':weatherSource(p)}${stationDescription(w)?' · '+stationDescription(w):''}${kind==='observed'?' · Mesura a l’estació; estimació per a aquesta cel·la.':''}`;};
-const treeSource=p=>`${forest(p).species_source?.name||'Font d’espècies desconeguda'} · ${forest(p).species_source?.reference_period||'Període no disponible'}`;
+const treeSource=p=>`${forest(p).species_source?.name||'Font d’espècies desconeguda'} · ${forest(p).species_source?.reference_period||'Període no disponible'}${forest(p).nearby_trees?' · Espècies d’un punt proper a uns '+forest(p).nearby_trees.distance_m+' m; estimació per proximitat.':''}`;
 export const VARIABLES=[
  {id:'index',name:'Índex ambiental',value:(p,s)=>p.models?.[s]?.index??null,format:v=>number(v,' /100',0),color:v=>v==null?'#87918a':v>=70?'#36785a':v>=40?'#bea352':'#bd704b',legend:[['#bd704b','0–39'],['#bea352','40–69'],['#36785a','70–100']],source:()=> 'Model heurístic · índex d’adequació, no probabilitat de trobar bolets.'},
  {id:'temperature',name:'Temperatura',value:p=>weather(p).temperature,format:v=>number(v,' °C'),color:v=>bins(v,[5,15,25]),legend:colors.map((c,i)=>[c,['<5 °C','5–15 °C','15–25 °C','≥25 °C'][i]]),source:p=>variableWeatherSource(p,'temperature')},
