@@ -1,4 +1,4 @@
-import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=12';
+import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=14';
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=(v,unit='',digits=1)=>Number.isFinite(v)?v.toLocaleString('ca-ES',{maximumFractionDigits:digits})+unit:'Sense dades';
 const factor=(p,s,name)=>p.models?.[s]?.factors?.find(f=>f.name===name)?.value??null;

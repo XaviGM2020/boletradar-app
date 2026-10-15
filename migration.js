@@ -1,4 +1,4 @@
-import {getMeta,setMeta,getOuting,putOuting} from './storage.js?v=12';
+import {getMeta,setMeta,getOuting,putOuting} from './storage.js?v=14';
 // Read-only legacy recovery. No record upload and no remote deletion.
 export async function migrateLegacy(){
  await setMeta('syncEnabled',false);

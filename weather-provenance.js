@@ -1,3 +1,3 @@
 export function originKind(w,key){if(w.provenance?.[key])return w.provenance[key];return w.source?.kind==='forecast'?'forecast':'modeled';}
 export function originLabel(kind){return ({observed:'Mesurat a l’estació',mixed:'Mixt: observacions i model',forecast:'Previst',modeled:'Estimat pel model',unknown:'Sense dades'})[kind]||'Estimat pel model';}
-export function stationDescription(w){const s=w.observation?.station;return s?`${s.name} (${s.code}) · ${s.distance_km} km · diferència d’altitud ${s.elevation_difference_m>0?'+':''}${s.elevation_difference_m} m`:null;}
+export function stationDescription(w){const s=w.observation?.station;return s?`${s.name} (${s.code}) · ${s.distance_km} km · diferència d’altitud ${Number.isFinite(s.elevation_difference_m)?`${s.elevation_difference_m>0?'+':''}${s.elevation_difference_m} m`:'desconeguda'}`:null;}
