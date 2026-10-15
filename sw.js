@@ -1,7 +1,7 @@
 const BASE=new URL('./',self.location.href);
-const CACHE='boletradar-shell-local-v15';
+const CACHE='boletradar-shell-local-v16';
 const ASSETS=['','index.html','styles.css','app.js','map-variables.js','weather-provenance.js','search-grid.js','search-origin.js','area-explorer.js','weather-client.js','storage.js','migration.js','manifest.json','privacy.html','comarques.geojson','vendor/leaflet.js','vendor/leaflet.css','vendor/images/marker-icon.png','vendor/images/marker-icon-2x.png','vendor/images/marker-shadow.png','vendor/images/layers.png','vendor/images/layers-2x.png','icons/icon.svg','icons/icon-192.png','icons/icon-512.png'];
-ASSETS.push(...ASSETS.filter(p=>p.endsWith('.js')||p==='styles.css').map(p=>p+'?v=15'));
+ASSETS.push(...ASSETS.filter(p=>p.endsWith('.js')||p==='styles.css').map(p=>p+'?v=16'));
 const URLS=ASSETS.map(p=>new URL(p,BASE).href);
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(URLS))));
 self.addEventListener('message',e=>{if(e.data==='SKIP_WAITING')self.skipWaiting();});

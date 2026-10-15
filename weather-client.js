@@ -281,13 +281,16 @@ function hostCompatibility(f, weights) {
   const trees = f.host_trees;
   if (Array.isArray(trees) && trees.length) {
     const known = trees.filter((t) => Object.hasOwn(weights, t.group));
-    if (!known.length) return { value: null, partial: true };
+    const unknown = trees.filter((t) => !Object.hasOwn(weights, t.group)).map((t) => t.name || t.scientific_name || "Esp\xE8cie no identificada");
+    if (!known.length) return { value: null, partial: true, reason: "El model encara no t\xE9 una compatibilitat definida per a: " + unknown.join(", ") + "." };
     const weighted = known.every((t) => Number.isFinite(t.occupation) && t.occupation > 0);
     const denominator = known.reduce((n, t) => n + (weighted ? t.occupation : 1), 0);
-    return { value: known.reduce((n, t) => n + weights[t.group] * (weighted ? t.occupation : 1), 0) / denominator, partial: known.length !== trees.length || !weighted };
+    const needsProportions = !weighted && new Set(known.map((t) => weights[t.group])).size > 1;
+    const reasons = [...unknown.length ? ["Compatibilitat encara no definida per a: " + unknown.join(", ") + "."] : [], ...needsProportions ? ["Falten les proporcions dels arbres; s\u2019utilitza una mitjana provisional."] : []];
+    return { value: known.reduce((n, t) => n + weights[t.group] * (weighted ? t.occupation : 1), 0) / denominator, partial: unknown.length > 0 || needsProportions, reason: reasons.join(" ") || null };
   }
   const type = f.forest_type ?? "unknown";
-  return { value: type !== "unknown" && Object.hasOwn(weights, type) ? weights[type] : null, partial: false };
+  return { value: type !== "unknown" && Object.hasOwn(weights, type) ? weights[type] : null, partial: false, reason: type !== "unknown" && Object.hasOwn(weights, type) ? null : "La cartografia no proporciona esp\xE8cies d\u2019arbres valorables en aquest punt." };
 }
 
 // src/environment/comarques.json
@@ -337,7 +340,7 @@ function suitability(species, w, f, month) {
   let score = 100 * Object.entries(features).reduce((s, [k, v]) => s + v * p.weights[k], 0) / used;
   if (host === "none" || compatibility.value === 0 && !compatibility.partial) score = 0;
   const temporal = temporalAdjustment(w, species);
-  return { temporal, temporal_index: score === 0 ? 0 : Math.round(clamp((score + temporal.delta) / 100) * 100), index: Math.round(score), quality: compatibility.value == null || compatibility.partial ? "provisional" : "heuristic", coverage: Math.round(100 * used / total) / 100, factors: Object.entries(features).map(([k, v]) => ({ name: labels[k], value: Math.round(v * 100) / 100, effect: v >= 0.6 ? "favorable" : v <= 0.3 ? "unfavorable" : "neutral" })), missing: [...Object.keys(p.weights).filter((k) => !(k in features)).map((k) => labels[k]), ...compatibility.partial ? (f.host_trees || []).filter((t) => !Object.hasOwn(p.hosts, t.group)).map((t) => "Compatibilitat desconeguda: " + t.scientific_name) : [], "NDVI, pH, drenatge i validaci\xF3 micol\xF2gica"], model: "heuristic-v3", meaning: "\xCDndex ambiental exploratori 0\u2013100, no probabilitat de pres\xE8ncia ni garantia de troballes." };
+  return { temporal, temporal_index: score === 0 ? 0 : Math.round(clamp((score + temporal.delta) / 100) * 100), index: Math.round(score), quality: compatibility.value == null || compatibility.partial ? "provisional" : "heuristic", host_note: compatibility.reason || null, coverage: Math.round(100 * used / total) / 100, factors: Object.entries(features).map(([k, v]) => ({ name: labels[k], value: Math.round(v * 100) / 100, effect: v >= 0.6 ? "favorable" : v <= 0.3 ? "unfavorable" : "neutral" })), missing: [...Object.keys(p.weights).filter((k) => !(k in features)).map((k) => labels[k]), ...compatibility.reason ? [compatibility.reason] : [], "NDVI, pH, drenatge i validaci\xF3 micol\xF2gica"], model: "heuristic-v3", meaning: "\xCDndex ambiental exploratori 0\u2013100, no probabilitat de pres\xE8ncia ni garantia de troballes." };
 }
 async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal } = {}) {
   signal?.throwIfAborted();
