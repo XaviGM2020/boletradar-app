@@ -1,6 +1,7 @@
 // src/environment/browser-source-cache.mjs
 var NAME = "fungix-environment-v1";
 var limits = /* @__PURE__ */ new Map();
+var failures = /* @__PURE__ */ new Map();
 var writes = 0;
 var enabled = () => typeof caches !== "undefined" && typeof caches.open === "function";
 function sourceURL(url, params) {
@@ -46,7 +47,18 @@ function limitError(url, until) {
   error.retryable = false;
   return error;
 }
+function clearSourceFailure(url) {
+  failures.delete(group(url));
+}
+function recordSourceFailure(url) {
+  if (group(url) === "Open-Meteo") failures.set(group(url), Date.now() + 6e4);
+}
 async function assertSourceAvailable(url) {
+  if (failures.get(group(url)) > Date.now()) {
+    const error = new Error("Open-Meteo no respon: consultes noves pausades durant un minut; es fan servir les dades disponibles.");
+    error.status = 503;
+    throw error;
+  }
   const until = limits.get(group(url));
   if (until > Date.now()) throw limitError(url, until);
   const limit = await readSource(limitURL(url));
@@ -352,7 +364,7 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
   if (stored) return stored;
   const staleOnLimit = async (error) => {
     signal?.throwIfAborted();
-    if (error.status === 429 && u.hostname.endsWith("open-meteo.com")) return await readSource(sourceURL(url, params), { allowExpired: true });
+    if ((error.status === 429 || error.status >= 500 || error.name === "TypeError" || error.name === "TimeoutError") && u.hostname.endsWith("open-meteo.com")) return await readSource(sourceURL(url, params), { allowExpired: true });
     return null;
   };
   try {
@@ -366,7 +378,8 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       signal?.throwIfAborted();
-      const response = await fetch(u, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(25e3)]) : AbortSignal.timeout(25e3) });
+      const timeout = AbortSignal.timeout(u.hostname.endsWith("open-meteo.com") ? 1e4 : 25e3);
+      const response = await fetch(u, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       if (!response.ok) {
         if (response.status === 429) throw await recordSourceLimit(url, response);
         const error = new Error(`${provider}: font no disponible (HTTP ${response.status}).`);
@@ -374,12 +387,14 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
         error.retryable = [502, 503, 504].includes(response.status);
         throw error;
       }
+      clearSourceFailure(url);
       const result = { value: text ? await response.text() : await response.json(), fetched: (/* @__PURE__ */ new Date()).toISOString() };
       signal?.throwIfAborted();
       await writeSource(sourceURL(url, params), result, ttl);
       return result;
     } catch (e) {
       signal?.throwIfAborted();
+      if (e.name === "TypeError" || e.name === "TimeoutError" || e.status >= 500) recordSourceFailure(url);
       const saved = await staleOnLimit(e);
       if (saved) return saved;
       const transient = e.name === "TypeError" || e.name === "TimeoutError" || e.retryable;
@@ -388,7 +403,7 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
         signal?.throwIfAborted();
         continue;
       }
-      if (e.name === "TypeError" || e.name === "TimeoutError") throw new Error(`${provider} no respon o no \xE9s accessible. Revisa la connexi\xF3 o torna-ho a provar m\xE9s tard.`);
+      if (e.name === "TypeError" || e.name === "TimeoutError") throw Object.assign(new Error(`${provider} no respon o no \xE9s accessible. Es conserven les dades disponibles; les consultes noves es reprendran m\xE9s tard.`), { status: 503 });
       throw e;
     }
   }
@@ -396,7 +411,7 @@ async function cachedFetch(db, url, params, { ttl = 216e5, text = false, signal 
 function weatherRequest(target) {
   const now = today(), start = shift2(target, -30), archive = target < shift2(now, -5);
   const url = archive ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast";
-  const params = { timezone: "Europe/Madrid", daily: "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,wind_speed_10m_max,et0_fao_evapotranspiration", ...archive ? { start_date: start, end_date: target, hourly: "soil_moisture_0_to_7cm" } : { start_date: start, end_date: target, start_hour: target + "T00:00", end_hour: target + "T23:00", hourly: "soil_moisture_0_to_1cm" } };
+  const params = { timezone: "Europe/Madrid", daily: "temperature_2m_mean,temperature_2m_min,temperature_2m_max,precipitation_sum,relative_humidity_2m_mean,et0_fao_evapotranspiration", ...archive ? { start_date: start, end_date: target, hourly: "soil_moisture_0_to_7cm" } : { start_date: start, end_date: target, start_hour: target + "T00:00", end_hour: target + "T23:00", hourly: "soil_moisture_0_to_1cm" } };
   return { url, params, archive, start, now };
 }
 function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOString()) {
@@ -418,21 +433,33 @@ function parseWeather(raw, target, fetched = (/* @__PURE__ */ new Date()).toISOS
     }
   }
   const hourly = raw.hourly ?? {}, soilKey = Object.keys(hourly).find((k) => k.startsWith("soil_moisture")), soil = (hourly.time ?? []).flatMap((t, i) => t.startsWith(target) && hourly[soilKey]?.[i] != null ? [hourly[soilKey][i]] : []);
-  return { daily_rows: rows, ...temporalSummary(rows, target, shift2), no_rain_30d: since == null && Array.from({ length: 30 }, (_, i) => rows[shift2(target, -i - 1)]?.precipitation_sum).every((v) => Number.isFinite(v) && v < 2), temperature: current.temperature_2m_mean, temperature_min: current.temperature_2m_min, temperature_max: current.temperature_2m_max, rain, days_since_rain: since, rain_lookback_days: 30, humidity: current.relative_humidity_2m_mean, wind: current.wind_speed_10m_max, et0: current.et0_fao_evapotranspiration, soil_moisture: soil.length ? Math.round(soil.reduce((a, b) => a + b, 0) / soil.length * 1e4) / 1e4 : null, elevation: raw.elevation ?? null, temperature_anomaly: null, precipitation_anomaly: null, series: Object.entries(rows).filter(([t]) => t >= start && t <= target).map(([date, v]) => ({ date, temperature: v.temperature_2m_mean, rain: v.precipitation_sum, kind: date >= now ? "forecast" : archive ? "reanalysis" : "recent_model" })), source: { name: "Open-Meteo", url, license: "CC BY 4.0", retrieved_at: fetched, date: target, kind, resolution: "Model variable (~1\u201325 km); una cel\xB7la d\u20191 km no afegeix resoluci\xF3 meteorol\xF2gica.", grid_latitude: raw.latitude, grid_longitude: raw.longitude } };
+  return { daily_rows: rows, ...temporalSummary(rows, target, shift2), no_rain_30d: since == null && Array.from({ length: 30 }, (_, i) => rows[shift2(target, -i - 1)]?.precipitation_sum).every((v) => Number.isFinite(v) && v < 2), temperature: current.temperature_2m_mean, temperature_min: current.temperature_2m_min, temperature_max: current.temperature_2m_max, rain, days_since_rain: since, rain_lookback_days: 30, humidity: current.relative_humidity_2m_mean, wind: current.wind_speed_10m_max ?? null, et0: current.et0_fao_evapotranspiration, soil_moisture: soil.length ? Math.round(soil.reduce((a, b) => a + b, 0) / soil.length * 1e4) / 1e4 : null, elevation: raw.elevation ?? null, temperature_anomaly: null, precipitation_anomaly: null, series: Object.entries(rows).filter(([t]) => t >= start && t <= target).map(([date, v]) => ({ date, temperature: v.temperature_2m_mean, rain: v.precipitation_sum, kind: date >= now ? "forecast" : archive ? "reanalysis" : "recent_model" })), source: { request_grid_m: 1e3, name: "Open-Meteo", url, license: "CC BY 4.0", retrieved_at: fetched, date: target, kind, resolution: "Model variable (~1\u201325 km); una cel\xB7la d\u20191 km no afegeix resoluci\xF3 meteorol\xF2gica.", grid_latitude: raw.latitude, grid_longitude: raw.longitude } };
 }
 function storedWeather(result, target) {
   const weather2 = parseWeather(result.value, target, result.fetched);
   if (result.stale) {
     weather2.source.stale = true;
-    weather2.fallback_notice = "Open-Meteo ha limitat les consultes: predicci\xF3 calculada amb dades guardades del mateix punt i data. Consulta l\u2019antiguitat de la meteorologia.";
+    weather2.fallback_notice = "Open-Meteo no disponible: predicci\xF3 calculada amb dades guardades de la mateixa zona i data. Consulta l\u2019antiguitat de la meteorologia.";
   }
   return weather2;
 }
 async function weatherMany(db, points, target, options = {}) {
   if (!points.length) return [];
+  if (!options.grouped) {
+    const unique = [], indexes = /* @__PURE__ */ new Map(), order = [];
+    for (const p of points) {
+      const key = cell(p.lat, p.lon).id;
+      if (!indexes.has(key)) {
+        indexes.set(key, unique.length);
+        unique.push(p);
+      }
+      order.push(indexes.get(key));
+    }
+    const result2 = await weatherMany(db, unique, target, { ...options, grouped: true });
+    return order.map((i) => structuredClone(result2[i]));
+  }
   if (points.length > 8) {
     const result2 = [];
-    let firstError;
     for (let i = 0; i < points.length; i += 16) {
       const batches = [points.slice(i, i + 8), points.slice(i + 8, i + 16)].filter((p) => p.length);
       const settled = await Promise.allSettled(batches.map((p) => weatherMany(db, p, target, options)));
@@ -440,23 +467,30 @@ async function weatherMany(db, points, target, options = {}) {
       settled.forEach((r, j) => {
         if (r.status === "fulfilled") result2.push(...r.value);
         else {
-          firstError ??= r.reason;
           result2.push(...batches[j].map(() => ({ daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: null, error: r.reason.message, source: { name: "Open-Meteo", kind: "unavailable", date: target } })));
         }
       });
     }
-    if (firstError && result2.every((w) => w.temperature == null && w.rain?.["14"] == null)) throw firstError;
     return result2;
   }
   const { url, params } = weatherRequest(target);
-  let bases, modelError;
-  const pointParams = (p) => ({ ...params, latitude: p.lat.toFixed(6), longitude: p.lon.toFixed(6) });
-  const stored = db ? points.map(() => null) : await Promise.all(points.map((p) => readSource(sourceURL(url, pointParams(p)))));
+  let bases;
+  const pointParams = (p) => {
+    const c = cell(p.lat, p.lon);
+    return { ...params, latitude: c.lat.toFixed(6), longitude: c.lon.toFixed(6) };
+  };
+  const readPoint = async (p, allowExpired = false) => {
+    const current = await readSource(sourceURL(url, pointParams(p)), { allowExpired });
+    if (current) return current;
+    const legacy = { ...params, daily: params.daily.replace("relative_humidity_2m_mean,", "relative_humidity_2m_mean,wind_speed_10m_max,"), latitude: p.lat.toFixed(6), longitude: p.lon.toFixed(6) };
+    return await readSource(sourceURL(url, legacy), { allowExpired });
+  };
+  const stored = db ? points.map(() => null) : await Promise.all(points.map((p) => readPoint(p)));
   options.signal?.throwIfAborted();
   try {
     const data = [...stored], pending = points.map((_, i) => i).filter((i) => !stored[i]);
     if (pending.length) {
-      const { value: raw, fetched, stale } = await cachedFetch(db, url, { ...params, latitude: pending.map((i) => points[i].lat.toFixed(6)).join(","), longitude: pending.map((i) => points[i].lon.toFixed(6)).join(",") }, options);
+      const { value: raw, fetched, stale } = await cachedFetch(db, url, { ...params, latitude: pending.map((i) => pointParams(points[i]).latitude).join(","), longitude: pending.map((i) => pointParams(points[i]).longitude).join(",") }, options);
       const rows = Array.isArray(raw) ? raw : [raw];
       if (rows.length !== pending.length) throw new Error("Resposta meteorol\xF2gica incompleta.");
       for (let j = 0; j < pending.length; j++) {
@@ -469,13 +503,12 @@ async function weatherMany(db, points, target, options = {}) {
     bases = data.map((r) => storedWeather(r, target));
   } catch (e) {
     options.signal?.throwIfAborted();
-    modelError = e;
-    if (e.status === 429) await Promise.all(points.map(async (p, i) => {
-      stored[i] ??= await readSource(sourceURL(url, pointParams(p)), { allowExpired: true });
+    await Promise.all(points.map(async (p, i) => {
+      stored[i] ??= await readPoint(p, true);
     }));
     options.signal?.throwIfAborted();
     let heights = [];
-    if (e.status !== 429) try {
+    if (e.status !== 429 && e.status < 500 && e.name !== "TypeError" && e.name !== "TimeoutError") try {
       const { value } = await cachedFetch(db, "https://api.open-meteo.com/v1/elevation", { latitude: points.map((p) => p.lat).join(","), longitude: points.map((p) => p.lon).join(",") }, options);
       heights = value.elevation || [];
     } catch {
@@ -484,7 +517,6 @@ async function weatherMany(db, points, target, options = {}) {
     bases = points.map((p, i) => stored[i] ? storedWeather(stored[i], target) : { daily_rows: {}, temperature: null, rain: {}, soil_moisture: null, elevation: Number.isFinite(heights[i]) ? heights[i] : null, error: e.message, source: { name: "Open-Meteo", kind: "unavailable", retrieved_at: (/* @__PURE__ */ new Date()).toISOString(), resolution: "Model no disponible." } });
   }
   const result = await observedWeatherMany(cachedFetch, db, points, bases, target, today(), options);
-  if (modelError && result.every((w) => w.temperature == null && w.rain["14"] == null)) throw modelError;
   return result;
 }
 async function weather(db, lat, lon, target, options = {}) {

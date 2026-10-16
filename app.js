@@ -1,11 +1,11 @@
-import {createSearchOrigin} from './search-origin.js?v=17';
-import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=17';
-import {coarsePoints,refinePoints,radiiWithin,nationalPoints,distanceKm,viewportCells} from './search-grid.js?v=17';
-import {fetchCells} from './area-explorer.js?v=17';
-import {createVariableLayers,createVariableControl} from './map-variables.js?v=17';
-import {predict,extract,comarca,cell,dataQuality,suitability,compareDetection,clearObservationCache} from './weather-client.js?v=17';
-import {migrateLegacy} from './migration.js?v=17';
-import {allOutings,getOuting,putOuting,getMeta,setMeta,setMetaMany,clear,clearSearch,removeOuting} from './storage.js?v=17';
+import {createSearchOrigin} from './search-origin.js?v=18';
+import {originKind,originLabel,stationDescription} from './weather-provenance.js?v=18';
+import {coarsePoints,refinePoints,radiiWithin,nationalPoints,distanceKm,viewportCells} from './search-grid.js?v=18';
+import {fetchCells} from './area-explorer.js?v=18';
+import {createVariableLayers,createVariableControl} from './map-variables.js?v=18';
+import {predict,extract,comarca,cell,dataQuality,suitability,compareDetection,clearObservationCache} from './weather-client.js?v=18';
+import {migrateLegacy} from './migration.js?v=18';
+import {allOutings,getOuting,putOuting,getMeta,setMeta,setMetaMany,clear,clearSearch,removeOuting} from './storage.js?v=18';
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const format=(v,u='')=>v==null?'Desconegut':Number(v).toLocaleString('ca-ES',{maximumFractionDigits:1})+u;
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Madrid',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -105,7 +105,7 @@ async function recommend(lat,lon,origin=null){
   current=ranked[0]||null;selection=current?.cell||null;
   for(const p of results)variables.upsert(p,{recommendable:ranked.some(v=>v.cell.id===p.cell.id)});for(const p of ranked)draw(p);
   if(current){if(nationwide)map.fitBounds(L.geoJSON(boundaries).getBounds());else map.fitBounds(L.latLngBounds([[lat,lon],...ranked.map(p=>[p.cell.lat,p.cell.lon])]).pad(.3));$('zone-details').innerHTML='<span class="eyebrow">PROPOSTA DE L’APP</span>'+detail(current);notice(`Comparats ${results.length} punts ${nationwide?'a tot Catalunya':'en un radi de '+radius+' km'} amb exploració i refinament. ${interrupted?'Cerca parcial: '+interrupted+' ':''}${errors?'Hi ha fonts incompletes en alguns punts. ':''}La proposta és orientativa.`);}
-  else{$('zone-details').innerHTML='<h2>Sense proposta amb prou dades</h2><p>Cap candidat amb índex disponible i cobertura arbòria coneguda ≥20 %. Pots explorar les variables al mapa o ampliar el radi.</p>';notice((interrupted?'Cerca parcial: '+interrupted+' ':'')+'Cap candidat forestal amb prou dades en aquesta cerca.');}
+  else{$('zone-details').innerHTML=`<h2>Sense proposta amb prou dades</h2><p>Cap candidat amb índex disponible i cobertura arbòria coneguda ≥20 %. Pots explorar les variables al mapa o ampliar el radi.</p>${results.every(p=>p.environment.weather.temperature==null&&p.environment.weather.rain?.['14']==null)?'<p>No s’ha pogut obtenir meteorologia ni recuperar-ne una còpia suficient per a aquests punts i data. La informació forestal disponible es pot consultar al mapa.</p>':''}`;notice((interrupted?'Cerca parcial: '+interrupted+' ':'')+'Cap candidat forestal amb prou dades en aquesta cerca.');}
   await renderRanking();
  }catch(e){if(version===predictionVersion&&e.name!=='AbortError')notice(e.message);}finally{if(version===predictionVersion){$('zone-details').removeAttribute('aria-busy');$('recommend').disabled=false;}}
 }
